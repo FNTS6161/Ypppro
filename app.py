@@ -1,117 +1,102 @@
 import streamlit as st
 import requests
 from io import BytesIO
-from PIL import Image
-from moviepy.editor import (
-    AudioFileClip,
-    ImageClip,
-    TextClip,
-    CompositeVideoClip
-)
+from PIL import Image, ImageDraw, ImageFont
+from moviepy.editor import AudioFileClip, ImageClip
 import tempfile
 import os
 
 st.set_page_config(page_title='NIKO VIDEO FACTORY', layout='centered')
 
 st.title('🎬 NIKO VIDEO FACTORY')
-st.caption('Gerçek MP4 video üretici')
+st.caption('ImageMagick gerektirmeyen çalışan sürüm')
 
-script = st.text_area(
-    'Senaryo',
-    height=180,
-    placeholder='Videoda okunacak metni yaz...'
-)
-
+script = st.text_area('Senaryo', height=180)
 api_key = st.text_input('ElevenLabs API Key', type='password')
 voice_id = st.text_input('Voice ID')
 
-fmt = st.radio(
-    'Format',
-    ['Shorts 9:16', 'Long 16:9'],
-    horizontal=True
-)
+fmt = st.radio('Format', ['Shorts 9:16', 'Long 16:9'], horizontal=True)
 
 uploaded_bg = st.file_uploader(
     'Arka plan resmi yükle',
     type=['png', 'jpg', 'jpeg']
 )
 
-if st.button('🚀 MP4 Video Oluştur', use_container_width=True):
+if st.button('🚀 MP4 Video Oluştur'):
 
-    if not script or not api_key or not voice_id:
-        st.error('Lütfen senaryo, API key ve Voice ID gir.')
+    if not script or not api_key or not voice_id or uploaded_bg is None:
+        st.error('Tüm alanları doldur.')
         st.stop()
 
-    if uploaded_bg is None:
-        st.error('Lütfen arka plan resmi yükle.')
-        st.stop()
+    # ElevenLabs ses üret
+    url = f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}'
 
-    with st.spinner('🎤 ElevenLabs sesi oluşturuluyor...'):
-
-        url = f'https://api.elevenlabs.io/v1/text-to-speech/{voice_id}'
-
-        headers = {
+    r = requests.post(
+        url,
+        headers={
             'xi-api-key': api_key,
             'Content-Type': 'application/json'
-        }
-
-        payload = {
+        },
+        json={
             'text': script,
             'model_id': 'eleven_multilingual_v2'
         }
-
-        r = requests.post(url, headers=headers, json=payload)
+    )
 
     if r.status_code != 200:
-        st.error(f'ElevenLabs hatası: {r.text}')
+        st.error(r.text)
         st.stop()
 
-    with tempfile.TemporaryDirectory() as tmpdir:
+    with tempfile.TemporaryDirectory() as tmp:
 
-        audio_path = os.path.join(tmpdir, 'voice.mp3')
-        video_path = os.path.join(tmpdir, 'output.mp4')
-        bg_path = os.path.join(tmpdir, 'bg.jpg')
+        audio_path = os.path.join(tmp, 'voice.mp3')
+        image_path = os.path.join(tmp, 'bg.jpg')
+        video_path = os.path.join(tmp, 'output.mp4')
 
-        with open(audio_path, 'wb') as f:
-            f.write(r.content)
+        open(audio_path, 'wb').write(r.content)
 
-        image = Image.open(uploaded_bg)
-        image.save(bg_path)
-
-        audio = AudioFileClip(audio_path)
-        duration = audio.duration
+        img = Image.open(uploaded_bg).convert('RGB')
 
         if fmt.startswith('Shorts'):
             W, H = 1080, 1920
         else:
             W, H = 1920, 1080
 
-        bg_clip = (
-            ImageClip(bg_path)
-            .resize(height=H)
-            .set_duration(duration)
+        img = img.resize((W, H))
+
+        draw = ImageDraw.Draw(img)
+
+        text = script[:140]
+
+        try:
+            font = ImageFont.truetype('DejaVuSans.ttf', 48)
+        except:
+            font = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+
+        x = (W - tw) // 2
+        y = H - th - 180
+
+        draw.rounded_rectangle(
+            [x - 30, y - 20, x + tw + 30, y + th + 20],
+            radius=25,
+            fill=(0, 0, 0)
         )
 
-        bg_clip = bg_clip.resize(width=W)
+        draw.text((x, y), text, fill='white', font=font)
 
-        txt = (
-            TextClip(
-                script[:120],
-                fontsize=64 if fmt.startswith('Shorts') else 48,
-                color='white',
-                method='caption',
-                size=(W - 120, None),
-                align='center'
-            )
-            .set_position(('center', H - 320))
-            .set_duration(duration)
-        )
+        img.save(image_path)
 
-        final = CompositeVideoClip([bg_clip, txt], size=(W, H))
-        final = final.set_audio(audio)
+        audio = AudioFileClip(audio_path)
 
-        with st.spinner('🎬 MP4 oluşturuluyor...'):
-            final.write_videofile(
+        clip = ImageClip(image_path).set_duration(audio.duration)
+        clip = clip.set_audio(audio)
+
+        with st.spinner('🎬 Video oluşturuluyor...'):
+            clip.write_videofile(
                 video_path,
                 fps=24,
                 codec='libx264',
@@ -120,16 +105,13 @@ if st.button('🚀 MP4 Video Oluştur', use_container_width=True):
                 logger=None
             )
 
-        st.success('✅ Video hazır!')
+        st.success('Video hazır!')
 
         st.video(video_path)
 
-        with open(video_path, 'rb') as f:
-            st.download_button(
-                '⬇️ MP4 İndir',
-                data=f,
-                file_name='niko_video.mp4',
-                mime='video/mp4',
-                use_container_width=True
-            )
-            
+        st.download_button(
+            '⬇️ MP4 İndir',
+            open(video_path, 'rb'),
+            file_name='niko_video.mp4',
+            mime='video/mp4'
+        )
