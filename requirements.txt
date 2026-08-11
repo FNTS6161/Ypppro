@@ -1,2 +1,7 @@
 streamlit
 requests
+moviepy==1.0.3
+Pillow
+imageio
+imageio-ffmpeg
+numpy
